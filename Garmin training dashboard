@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Garmin training dashboard</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mut:#6b6b6b;--card:#f3f3f0;--acc:#d9480f;--acc2:#1c7ed6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16181a;--fg:#ececec;--mut:#9a9a9a;--card:#222527;--acc:#ff8a4c;--acc2:#5aa9f5}}
+:root[data-theme="dark"]{--bg:#16181a;--fg:#ececec;--mut:#9a9a9a;--card:#222527;--acc:#ff8a4c;--acc2:#5aa9f5}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0 auto;max-width:900px;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+h1{font-size:20px;margin:0 0 2px}h2{font-size:15px;margin:18px 0 6px}
+.mut{color:var(--mut);font-size:13px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+.card{background:var(--card);border-radius:10px;padding:10px 14px;flex:1;min-width:130px}
+.big{font-size:24px;font-weight:600}
+nav{display:flex;gap:6px;margin:14px 0}
+nav button{flex:1;padding:8px;border:0;border-radius:8px;background:var(--card);color:var(--fg);font:inherit;cursor:pointer}
+nav button.on{background:var(--acc);color:#fff}
+section{display:none}section.on{display:block}
+svg{width:100%;height:auto;display:block}
+.ax{font-size:11px;fill:var(--mut)}.lbl{fill:var(--fg);font-weight:600}.gl{stroke:var(--mut);opacity:.25;stroke-width:1}.d1{fill:var(--acc)}.d2{fill:var(--acc2)}.ro{min-height:20px;margin:2px 0 6px}.cap{font-size:12px;color:var(--mut);margin:0 0 4px}.l1{fill:none;stroke:var(--acc);stroke-width:2}.l2{fill:none;stroke:var(--acc2);stroke-width:2}.b1{fill:var(--acc)}.b2{fill:var(--acc2)}
+.tw{overflow-x:auto}.pc ul{margin:6px 0 8px;padding-left:20px}.gl2{font-size:13px;color:var(--acc2);margin-top:8px}select{width:100%;font:inherit;color:var(--fg);background:var(--card);border:0;border-radius:8px;padding:8px}a{color:var(--acc2)}#today .card{background:var(--acc);color:#fff;text-align:center}#today .mut{color:#fff;opacity:.9}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:4px 8px;text-align:left;border-bottom:1px solid var(--card)}
+button.go{padding:6px 12px;border:0;border-radius:8px;background:var(--acc);color:#fff;font:inherit}
+</style></head><body>
+<h1>Training dashboard</h1><div class="mut" id="upd">Live from your Garmin Data sheet</div>
+<div class="row" id="race"></div>
+<div id="today"></div>
+<div id="msg" class="mut"></div>
+<nav><button data-t="t1" class="on">Training load</button><button data-t="t2">Running</button><button data-t="t3">Recovery</button><button data-t="t4">Plan</button></nav>
+<section id="t1" class="on"></section><section id="t2"></section><section id="t3"></section><section id="t4"></section>
+<script>
+const SID='1kPmfYP4oZ1Ai5T-DL3MuvspnCTVlE457KSwyV4t_tlw';
+const $=s=>document.querySelector(s);
+const num=v=>{const n=parseFloat(v);return isNaN(n)?null:n};
+const DAY=86400000;
+const day=s=>new Date(String(s).substring(0,10)+'T00:00:00').getTime();
+const mmss=s=>Math.floor(Math.round(s)/60)+':'+String(Math.round(s)%60).padStart(2,'0');
+const fd=t=>new Date(t).toLocaleDateString('en-AU',{day:'numeric',month:'short'});
+const dl=t=>new Date(t).toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'});
+const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+function rows(v){if(!Array.isArray(v)||v.length<2)return[];const h=v[0];return v.slice(1).map(r=>{const o={};h.forEach((k,i)=>o[k]=r[i]===undefined?'':r[i]);return o})}
+async function get(mcp,range){const r=await mcp.callTool('Google Sheets','get_values',{spreadsheetId:SID,range});const p=r.payload;return rows(p&&p.values)}
+const EMPTY='<p class="mut">Not enough data yet.</p>';
+const chart=svg=>'<div class="ch">'+svg+'<div class="ro mut">Tap or hover a point to read its exact value</div></div>';
+const tile=(n,v,sub)=>'<div class="card"><div class="mut">'+n+'</div><div class="big">'+v+'</div><div class="mut">'+(sub||'&nbsp;')+'</div></div>';
+const W=600,H=190,L=46,B=22,T=16,R=10;
+function grid(Y,lo,hi,fmt){let g='';for(let i=0;i<4;i++){const v=lo+(hi-lo)*i/3,y=Y(v).toFixed(1);g+='<line class="gl" x1="'+L+'" x2="'+(W-R)+'" y1="'+y+'" y2="'+y+'"/><text class="ax" x="'+(L-5)+'" y="'+(+y+4)+'" text-anchor="end">'+fmt(v)+'</text>'}return g}
+function line(pts,fmt,cls,inv,unit){
+  if(pts.length<2)return EMPTY;
+  const ys=pts.map(a=>a.y);let mn=Math.min(...ys),mx=Math.max(...ys);const pd=(mx-mn)*.12||1;mn-=pd;mx+=pd;
+  const t0=pts[0].t,t1=pts[pts.length-1].t;
+  const X=t=>L+(W-L-R)*(t-t0)/(t1-t0||1),Y=y=>{const f=(y-mn)/(mx-mn);return T+(H-T-B)*(inv?f:1-f)};
+  let g=grid(Y,mn,mx,fmt);
+  for(let i=0;i<4;i++){const t=t0+(t1-t0)*i/3;g+='<text class="ax" x="'+X(t).toFixed(1)+'" y="'+(H-5)+'" text-anchor="'+(i==0?'start':i==3?'end':'middle')+'">'+fd(t)+'</text>'}
+  const d=pts.map((a,i)=>(i?'L':'M')+X(a.t).toFixed(1)+' '+Y(a.y).toFixed(1)).join('');
+  const dots=pts.map(a=>{const x=X(a.t).toFixed(1),y=Y(a.y).toFixed(1);return '<circle class="'+cls.replace('l','d')+'" cx="'+x+'" cy="'+y+'" r="3"/><circle cx="'+x+'" cy="'+y+'" r="10" fill="transparent" data-r="'+dl(a.t)+': '+fmt(a.y)+(unit||'')+'"/>'}).join('');
+  const e=pts[pts.length-1];
+  return chart('<svg viewBox="0 0 '+W+' '+H+'" role="img">'+g+'<path class="'+cls+'" d="'+d+'"/>'+dots+'<text class="ax lbl" x="'+X(e.t).toFixed(1)+'" y="'+Math.max(Y(e.y)-8,10).toFixed(1)+'" text-anchor="end">'+fmt(e.y)+'</text></svg>');
+}
+function bars(items,fmt,cls,unit){
+  if(!items.length)return EMPTY;
+  const n=items.length,bw=(W-L-R)/n,mx=(Math.max(...items.map(i=>i.v))||1)*1.15,Y=v=>T+(H-T-B)*(1-v/mx);
+  let g=grid(Y,0,mx,fmt),r='';
+  items.forEach((it,i)=>{const x=L+i*bw,y=Y(it.v);r+='<rect class="'+cls+'" x="'+(x+1).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+Math.max(bw-2,1).toFixed(1)+'" height="'+(H-B-y).toFixed(1)+'" data-r="Week of '+dl(it.t)+': '+fmt(it.v)+(unit||'')+'"/>';if(n<=16&&it.v>0)r+='<text class="ax" x="'+(x+bw/2).toFixed(1)+'" y="'+(y-3).toFixed(1)+'" text-anchor="middle">'+fmt(it.v)+'</text>'});
+  for(let i=0;i<4;i++){const k=Math.round((n-1)*i/3);g+='<text class="ax" x="'+(L+k*bw+bw/2).toFixed(1)+'" y="'+(H-5)+'" text-anchor="'+(i==0?'start':i==3?'end':'middle')+'">'+fd(items[k].t)+'</text>'}
+  return chart('<svg viewBox="0 0 '+W+' '+H+'" role="img">'+g+r+'</svg>');
+}
+function race(){
+  const T2=[['Nagoya Pro Doubles','2027-04-16'],['Sydney Pro Singles (early July, approx.)','2027-07-01']];
+  $('#race').innerHTML=T2.map(([n,d])=>{const x=Math.ceil((day(d)-Date.now())/DAY);return tile(n,x+' days',Math.floor(x/7)+' weeks to go')}).join('');
+}
+function weekly(acts,key){
+  const ms=acts.map(a=>day(a.startTimeLocal));if(!ms.length)return[];
+  const mon=t=>{const d=new Date(t);return t-((d.getDay()+6)%7)*DAY};
+  const b={};acts.forEach(a=>{const w=mon(day(a.startTimeLocal));b[w]=(b[w]||0)+key(a)});
+  const out=[];for(let w=mon(Math.min(...ms));w<=mon(Date.now());w+=7*DAY)out.push({t:w,v:b[w]||0});return out;
+}
+const since=(acts,d)=>acts.filter(a=>day(a.startTimeLocal)>=Date.now()-d*DAY);
+const hrsOf=a=>(num(a.duration)||0)/3600;
+function train(acts){
+  const hrs=weekly(acts,hrsOf),load=weekly(acts,a=>num(a.activityTrainingLoad)||0);
+  const cw=hrs.length?hrs[hrs.length-1].v:0,pw=hrs.length>1?hrs[hrs.length-2].v:0;
+  const full=hrs.slice(-5,-1).map(w=>w.v);
+  const s7=since(acts,7),s28=since(acts,28),by={};
+  s28.forEach(a=>{const k=a['activityType.typeKey']||'other';by[k]=by[k]||{n:0,h:0};by[k].n++;by[k].h+=hrsOf(a)});
+  const tr=Object.keys(by).sort((x,y)=>by[y].h-by[x].h).map(k=>'<tr><td>'+k.replace(/_/g,' ')+'</td><td>'+by[k].n+'</td><td>'+by[k].h.toFixed(1)+' h</td></tr>').join('');
+  $('#t1').innerHTML='<div class="row">'+tile('Hours this week',cw.toFixed(1)+' h','last week '+pw.toFixed(1)+' h')+tile('Sessions (7 days)',s7.length,s28.length+' in 28 days')+tile('Training load (7 days)',Math.round(s7.reduce((x,a)=>x+(num(a.activityTrainingLoad)||0),0)),'Garmin load points')+tile('Avg weekly hours',full.length?avg(full).toFixed(1)+' h':'–','last 4 full weeks')+'</div><h2>Weekly training hours</h2>'+bars(hrs,v=>v.toFixed(1),'b1',' h')+'<h2>Weekly training load (Garmin points)</h2>'+bars(load,v=>Math.round(v),'b2',' pts')+'<h2>Last 28 days by type</h2><div class="tw"><table><tr><th>Type</th><th>Sessions</th><th>Time</th></tr>'+tr+'</table></div>';
+}
+function runs(acts,spl){
+  const isRun=a=>/running/.test(a['activityType.typeKey']);
+  const R2=acts.filter(a=>isRun(a)&&num(a.distance)>1000).map(a=>{const sp=spl[a.activityId]||[],w=sp.find(x=>x.splitType==='INTERVAL_ACTIVE'),iv=sp.some(x=>/INTERVAL_(REST|RECOVERY)/.test(x.splitType)),ok=w&&num(w.distance)>=1000&&num(w.duration)>0,km=(ok?num(w.distance):num(a.distance))/1000,du=ok?num(w.duration):num(a.duration),hr=ok?(num(w.averageHR)||num(a.averageHR)):num(a.averageHR);return{t:day(a.startTimeLocal),km,tot:num(a.distance)/1000,pace:du/km,hr,mpb:hr?(km*1000/(du/60))/hr:null,iv,d:a.startTimeLocal.substring(0,10)}});
+  RUNS=R2;const rec=R2.filter(r=>r.t>=Date.now()-28*DAY),km28=rec.reduce((x,r)=>x+r.km,0);
+  const secs=rec.reduce((x,r)=>x+r.pace*r.km,0);
+  const eff=R2.filter(r=>r.mpb);const e5=eff.slice(-5).map(r=>r.mpb);
+  const long=R2.reduce((m,r)=>r.tot>m?r.tot:m,0);
+  const last=R2.slice(-8).reverse().map(r=>'<tr><td>'+r.d+(r.iv?' ⚡':'')+'</td><td>'+r.km.toFixed(1)+' km</td><td>'+mmss(r.pace)+' /km</td><td>'+(r.hr?Math.round(r.hr):'–')+'</td><td>'+(r.mpb?r.mpb.toFixed(2):'–')+'</td></tr>').join('');
+  const wk=weekly(acts.filter(isRun),a=>(num(a.distance)||0)/1000);
+  $('#t2').innerHTML='<div class="row">'+tile('Runs (28 days)',rec.length,rec.reduce((x,r)=>x+r.tot,0).toFixed(1)+' km total')+tile('Avg pace (28 days)',km28?mmss(secs/km28)+' /km':'–','distance-weighted')+tile('Avg HR (28 days)',rec.filter(r=>r.hr).length?Math.round(avg(rec.filter(r=>r.hr).map(r=>r.hr))):'–','bpm')+tile('Longest run',long.toFixed(1)+' km','all time in sheet')+tile('Efficiency',e5.length?avg(e5).toFixed(2):'–','metres per beat, last 5 runs')+'</div>'+
+  '<h2>Pace at heart rate: metres per heartbeat</h2><p class="cap">Distance covered per heartbeat. Higher means you’re running faster for the same effort, so an upward trend is aerobic fitness improving.</p>'+line(eff.map(r=>({t:r.t,y:r.mpb})),v=>v.toFixed(2),'l1',false,' m/beat')+
+  '<h2>Pace per run (min/km)</h2><p class="cap">Faster runs are higher. Pace and heart rate use the work portions only (rest, recovery, walking and standing are excluded; ⚡ marks interval sessions).</p>'+line(R2.map(r=>({t:r.t,y:r.pace})),mmss,'l2',true,' /km')+
+  '<h2>Average heart rate per run (bpm)</h2>'+line(R2.filter(r=>r.hr).map(r=>({t:r.t,y:r.hr})),v=>Math.round(v),'l1',false,' bpm')+
+  '<h2>Weekly running distance (km)</h2>'+bars(wk,v=>v.toFixed(1),'b1',' km')+
+  '<h2>Recent runs</h2><div class="tw"><table><tr><th>Date</th><th>Work dist.</th><th>Work pace</th><th>Avg HR</th><th>m/beat</th></tr>'+last+'</table></div>';
+}
+function bySplit(sp){const m={};sp.forEach(r=>{(m[r.activityId]=m[r.activityId]||[]).push(r)});return m}
+function recov(hrv,daily,sleep){
+  const S=(rs,dk,vk)=>rs.map(r=>({t:day(r[dk]),y:num(r[vk])})).filter(p=>p.y!==null&&!isNaN(p.t)).sort((a,b)=>a.t-b.t);
+  const H=S(hrv,'calendarDate','lastNightAvg'),RH=S(daily,'calendarDate','heartRate.restingValue'),SC=S(sleep,'calendarDate','sleepScores.overall.value'),BB=S(daily,'calendarDate','bodyBattery.maxValue');
+  const t2=(n,a,u)=>tile(n,a.length?a[a.length-1].y:'–',a.length?'7-day avg '+Math.round(avg(a.slice(-7).map(p=>p.y)))+(u||''):'');
+  const f=v=>Math.round(v);
+  $('#t3').innerHTML='<div class="row">'+t2('HRV (last night, ms)',H)+t2('Resting HR (bpm)',RH)+t2('Sleep score',SC)+t2('Body Battery peak',BB)+'</div><h2>Overnight HRV (ms)</h2>'+line(H,f,'l1',false,' ms')+'<h2>Resting heart rate (bpm)</h2>'+line(RH,f,'l2',false,' bpm')+'<h2>Sleep score (0–100)</h2>'+line(SC,f,'l1',false,'')+'<h2>Body Battery daily peak</h2>'+line(BB,f,'l2',false,'')+'<p class="mut">The latest day in the sheet may still be in progress.</p>';
+}
+let ACTS=null,RUNS=[],PWK=null;
+const PSTART=new Date(2026,9,19),DEL=[4,8,12,16,20],PH=[['Rebuild',1,8],['Build',9,16],['Race-specific',17,23],['Taper',24,25],['Race week',26,26]];
+const PW=[{n:6,t:'6 x 1km',r:[270,278],s:['6 x 1km @ 4:30-4:38/km','90 sec easy jog between reps']},{n:7,t:'7 x 1km',r:[260,270],s:['7 x 1km @ 4:20-4:30/km','Rep 1 no faster than 4:20; finish within about 5 sec of rep 1','75 sec easy jog between reps']},{n:8,t:'8 x 1km',r:[257,267],s:['8 x 1km @ 4:17-4:27/km','75 sec easy jog between reps']},{n:5,t:'5 x 1km (deload)',r:[262,272],s:['5 x 1km @ 4:22-4:32/km','90 sec easy jog between reps']},{n:3,t:'3 x 2km',r:[258,266],s:['3 x 2km @ 4:18-4:26/km','2 min easy jog between reps','Longer reps run a touch slower, so the range is not copied straight from the 1km reps']},{n:6,t:'6 x 1km',r:[252,260],s:['6 x 1km @ 4:12-4:20/km','75 sec easy jog between reps','Shortened because Thursday this week is the first solo benchmark']}];
+const PT=[{n:4,t:'Weak-station rounds',r:[280,290],s:['4 rounds, 90 sec rest between rounds:','1km run @ 4:40-4:50/km','25 wall balls @ 9kg','25m sandbag lunges @ ~95% Pro weight','20m burpee broad jumps','Totals: 100 wall balls, 100m lunges, 80m burpee broad jumps']},{n:4,t:'Half sim, stations 5-8',r:[275,290],s:['1km run, Row 1000m','1km run, Farmers Carry 200m','1km run, Sandbag Lunges 100m @ ~95% Pro weight','1km run, Wall Balls 100 reps','Runs @ 4:35-4:50/km']},{n:5,t:'Half sim, stations 1-4',r:[275,285],s:['1km run, Ski Erg 1000m','1km run, Sled Push 50m @ Pro weight','1km run, Sled Pull 50m @ Pro weight','1km run, Burpee Broad Jumps 80m, 1km run','Runs @ 4:35-4:45/km, no faster than 4:35. Sleds and burpees are heart-rate heavy, so protect them with the runs.','Log your sled and burpee times']},{n:3,t:'Technique deload',r:null,s:['3 rounds:','800m run, moderate effort','15 wall balls, 15m lunges, 10m burpee broad jumps','About 35 min total']}];
+const POUT={1:['Phase 1 outline: intervals 4:30 to 4:20 per km.','Phase 2 outline: intervals 4:20 to 4:10 per km.','Phase 3 outline: 1km reps around 4:05-4:10 per km.','Taper: shorter race-pace touches only.','Nagoya, 16-18 April. Keep it easy, sleep, and trust the work.'],2:['Phase 1 outline: runs between stations 4:50 to 4:30 per km. First benchmark in week 6 (solo full sim, full Pro weights).','Phase 2 outline: runs 4:30 to 4:15 per km. Fortnightly partner sessions begin. Solo benchmark in week 14.','Phase 3 outline: runs 4:15 to 4:00-4:05 per km. Weekly doubles sims. Full doubles sim in week 19, half sim in week 22.','Taper: volume down about 30%, then 50%.','Nagoya, 16-18 April.']};
+const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const pphase=n=>PH.find(p=>n>=p[1]&&n<=p[2])[0];
+const pdate=(n,k)=>{const d=new Date(PSTART);d.setDate(d.getDate()+7*(n-1)+k);return d};
+const past=d=>d.getTime()+DAY<=Date.now();
+function pcard(n,k){
+  const tue=k===1,w=(tue?PW:PT)[n-1],d=pdate(n,k),ds=iso(d);
+  const acts=ACTS.filter(a=>String(a.startTimeLocal).substring(0,10)===ds);
+  let h='<div class="card pc"><div class="mut">'+(tue?'Tuesday':'Thursday')+' '+d.toLocaleDateString('en-AU',{day:'numeric',month:'long'})+'</div>';
+  if(w){h+='<div class="big">'+w.t+'</div>'+(w.r?'<div>Target '+mmss(w.r[0])+'–'+mmss(w.r[1])+' /km</div>':'')+'<ul>'+w.s.map(x=>'<li>'+x+'</li>').join('')+'</ul>'}
+  else{const i=n<=8?0:n<=16?1:n<=23?2:n<=25?3:4;h+='<p>'+POUT[tue?1:2][i]+'</p><p class="mut">Detailed session not built yet.</p>'}
+  let g;
+  if(!acts.length)g=past(d)?'no Garmin activity found on this day':'not due yet';
+  else{g=acts.map(a=>(a['activityType.typeKey']||'').replace(/_/g,' ')+' '+Math.round((num(a.duration)||0)/60)+' min'+(num(a.averageHR)?', avg HR '+Math.round(num(a.averageHR)):'')).join('; ');
+    const r=RUNS.find(x=>x.d===ds);
+    if(tue&&w&&w.r&&r)g+=' | work pace '+mmss(r.pace)+' /km '+(r.pace>=w.r[0]-3&&r.pace<=w.r[1]+3?'✓ on target':r.pace<w.r[0]?'faster than target':'slower than target')}
+  return h+'<div class="gl2">Garmin: '+g+'</div></div>';
+}
+function planTab(){
+  if(!ACTS)return;
+  const cw=Math.min(26,Math.max(1,Math.floor((Date.now()-PSTART)/(7*DAY))+1));
+  if(PWK===null)PWK=cw;
+  let planned=0,done=0,onp=0,tp=0;
+  for(let n=1;n<=cw;n++)[1,3].forEach(k=>{const d=pdate(n,k);if(!past(d))return;planned++;const ds=iso(d);if(ACTS.some(a=>String(a.startTimeLocal).substring(0,10)===ds&&(num(a.duration)||0)>=1200))done++;if(k===1){const w=PW[n-1],r=RUNS.find(x=>x.d===ds);if(w&&w.r&&r){tp++;if(r.pace>=w.r[0]-3&&r.pace<=w.r[1]+3)onp++}}});
+  let opts='';for(let n=1;n<=26;n++)opts+='<option value="'+n+'"'+(n===PWK?' selected':'')+'>Week '+n+' ('+fd(pdate(n,0))+') '+pphase(n)+(DEL.includes(n)?' – deload':'')+'</option>';
+  $('#t4').innerHTML='<div class="row">'+tile('Plan week',cw+' of 26',pphase(cw)+(DEL.includes(cw)?' (deload)':''))+tile('Sessions done',done+' / '+planned,'Tue and Thu, 20+ min on the planned day')+tile('Tuesday runs on target',tp?onp+' / '+tp:'–','work pace within about 3 sec of range')+'</div><label class="mut" for="pw">Week</label><select id="pw">'+opts+'</select><div class="row">'+pcard(PWK,1)+pcard(PWK,3)+'</div><p class="mut">Sessions are matched to the planned day. Log effort and station times on <a href="https://dionalexander0904-cpu.github.io/Nagoya-Hyrox-Plan/" target="_blank" rel="noopener">your plan page</a>.</p>';
+  $('#pw').onchange=e=>{PWK=+e.target.value;planTab()};
+}
+const SPLIT=['Long run','Upper body strength','Intervals','Lower body strength','Hyrox session','BFT session','Rest day'];
+function todayTile(){
+  const now=new Date(),dow=now.getDay(),n=Math.floor((now-PSTART)/(7*DAY))+1;let sub='';
+  if(dow===2||dow===4){if(n>=1&&n<=26){const w=(dow===2?PW:PT)[n-1];sub='Week '+n+(DEL.includes(n)?' (deload)':'')+': '+(w?w.t+(w.r?' at '+mmss(w.r[0])+'–'+mmss(w.r[1])+' /km':''):'see the Plan tab')}}
+  else if(dow===0)sub='Longer, slower run';else if(dow===6)sub='Recover';
+  $('#today').innerHTML='<div class="row">'+tile('Today, '+now.toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'}),SPLIT[dow],sub)+'</div>';
+}
+function fail(e){
+  const c=e&&e.code;
+  $('#msg').innerHTML=(c==='server_not_connected'||c==='needs_reauth')?'Reconnect Google Sheets in claude.ai Settings → Connectors, then reload.':(c==='approval_required'||c==='consent_required'||c==='not_in_manifest')?'This page needs your OK to read the sheet. <button class="go" id="go">Allow and load</button>':'Couldn’t load the sheet ('+(c||'error')+'). <button class="go" id="go">Try again</button>';
+  const b=$('#go');if(b)b.onclick=load;
+}
+async function load(){
+  $('#msg').textContent='Loading from your Google Sheet…';
+  const mcp=window.claude&&await window.claude.use('mcp');
+  if(!mcp){$('#msg').textContent='Open this page in claude.ai to load your data.';return}
+  try{
+    const [a,h,d,s,sp]=await Promise.all([get(mcp,'activities!A1:CS1000'),get(mcp,'hrv!A1:L400'),get(mcp,'daily!A1:BQ400'),get(mcp,'sleep!A1:CY400'),get(mcp,'run_splits!A1:G600').catch(()=>[])]);
+    ACTS=a;train(a);runs(a,bySplit(sp));recov(h,d,s);planTab();
+    if(a.length)$('#upd').textContent='Latest activity in sheet: '+a[a.length-1].startTimeLocal.substring(0,10);
+    $('#msg').textContent='';
+  }catch(e){fail(e)}
+}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button,section').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');$('#'+b.dataset.t).classList.add('on');
+});
+['pointerover','click'].forEach(ev=>document.addEventListener(ev,e=>{const el=e.target.closest&&e.target.closest('[data-r]');if(el){const ro=el.closest('.ch').querySelector('.ro');ro.textContent=el.getAttribute('data-r');ro.style.color='var(--fg)'}}));
+race();todayTile();load();
+</script></body></html>
